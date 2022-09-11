@@ -70,4 +70,4 @@ Augmentation with different arguments, will generate #(TIMES)×#(SEEDS) extra da
 python batch_train.py --mode {MODE} --data {DATASET}
 ```
 
-Evaluation one dataset for all its augmenation set with specific mode. `MODE` can be 'raw', 'aug', 'raw_aug', which indicates train the model with raw dataset only, augmentation dataset only and combination of raw and augmentation set respectively. `DATASET` should be **one specific dataset** name. This will report all results of a specifc dataset in `/log`. If not specified, the hyperparameters will be set as in `/process_data/settings.py`, please look into this file for more arguments information.
+Evaluation one dataset for all its augmentation set with specific mode. `MODE` can be 'raw', 'aug', 'raw_aug', which indicates train the model with raw dataset only, augmentation dataset only and combination of raw and augmentation set respectively. `DATASET` should be **one specific dataset** name. This will report all results of a specifc dataset in `/log`. If not specified, the hyperparameters will be set as in `/process_data/settings.py`, please look into this file for more arguments information.
