@@ -94,42 +94,85 @@ class DataProcess(object):
         aug_dataset = aug_dataset.rename_column(self.label_name, 'labels')
 
         aug_dataset.set_format(type='torch', columns=['input_ids', 'token_type_ids', 'attention_mask', 'labels'])
+        aug_dataloader = torch.utils.data.DataLoader(aug_dataset, batch_size=self.aug_batch_size, shuffle=True)
 
-    def validationset(self,data):
+        if count_label:
+            return aug_dataloader, label_num
+        else:
+            return aug_dataloader
+
+    def test_data(self, count_label=False):
+        if self.data in ['sst2', 'rte', 'qqp', 'mnli', 'qnli']:
+            test_set = self.validation_dataset(data=self.data)
+            label_num = len(set(test_set[self.label_name]))
+        elif self.data in ['ag_news', 'imdb', 'mrpc', 'sst', 'trec',]:
+            test_set, label_num = self.test_dataset(data=self.data, label_num=count_label)
+        print('=' * 20, 'multiprocess processing test dataset', '=' * 20)
+
+        # Process dataset to make dataloader
+        if self.task == 'single':
+            test_set = test_set.map(self.encode, batched=True, num_proc=self.num_proc)
+        else:
+            test_set = test_set.map(self.encode_pair, batched=True, num_proc=self.num_proc)
+        test_set = test_set.rename_column(self.label_name, "labels")
+        test_set.set_format(type='torch', columns=['input_ids', 'token_type_ids', 'attention_mask', 'labels'])
+
+        test_dataloader = torch.utils.data.DataLoader(test_set, batch_size=self.batch_size, shuffle=True)
+
+        if count_label:
+            return test_dataloader, label_num
+        else:
+            return test_dataloader
+
+    @staticmethod
+    def validation_dataset(data):
         if data in ['sst2', 'rte', 'mrpc', 'qqp', 'mnli', 'qnli']:
             if data == 'mnli':
-                validation_set = load_dataset(
-                    'glue', data, split='validation_mismatched')
+                validation_set = load_dataset('glue', data, split='validation_mismatched')
             else:
                 validation_set = load_dataset('glue', data, split='validation')
-            print('-'*20, 'Test on glue@{}'.format(data), '-'*20)
+            print('-' * 20, 'Validation on glue@{}'.format(data), '-' * 20)
         elif data in ['imdb', 'ag_news', 'trec']:
             validation_set = load_dataset(data, split='test')
-            print('-'*20, 'Test on {}'.format(data), '-'*20)
+            print('-' * 20, 'Validation on {}'.format(data), '-' * 20)
         elif data == 'sst':
-            validation_set = load_dataset(data, 'default', split='test')
-            validation_set = validation_set.map(lambda example: {'label': int(
-                example['label']*10//2)}, remove_columns=['tokens', 'tree'], num_proc=4)
-            print('-'*20, 'Test on {}'.format(data), '-'*20)
+            validation_set = load_dataset(data, 'default', split='validation')
+            validation_set = validation_set.map(
+                lambda example: {
+                    'label': int(example['label'] * 10 // 2) if example['label'] != 1 else int(example['label'])
+                }, remove_columns=['tokens', 'tree'], num_proc=4
+            )
+            validation_set = validation_set.cast(
+                Features({'sentence': Value(dtype='string', id=None), "label": Value("int32")}),
+                batch_size=None, load_from_cache_file=False,
+            )
+            print('-' * 20, 'Validation on {}'.format(data), '-' * 20)
         else:
             validation_set = load_dataset(data, split='validation')
-            print('-'*20, 'Test on {}'.format(data), '-'*20)
-        
+            print('-' * 20, 'Validation on {}'.format(data), '-' * 20)
+
         return validation_set
 
-    def traindataset(self, data, low_resource_dir=None, split='train', label_num=False):
+    def train_dataset(self, data, low_resource_dir=None, split='train', label_num=False):
         if low_resource_dir:
-            train_set = load_from_disk(os.path.join(
-                low_resource_dir, 'partial_train'))
+            train_set = load_from_disk(os.path.join(low_resource_dir, 'partial_train'))
         else:
             if data in ['sst2', 'rte', 'mrpc', 'qqp', 'mnli', 'qnli']:
                 train_set = load_dataset('glue', data, split=split)
             elif data == 'sst':
                 train_set = load_dataset(data, 'default', split=split)
-                train_set = train_set.map(lambda example: {'label': int(
-                    example['label']*10//2)}, remove_columns=['tokens', 'tree'], num_proc=4)
+                train_set = train_set.map(
+                    lambda example: {
+                        'label': int(example['label'] * 10 // 2) if example['label'] != 1 else example['label']
+                    }, remove_columns=['tokens', 'tree'], num_proc=4
+                )
+                train_set = train_set.cast(
+                    Features({'sentence': Value(dtype='string', id=None), "label": Value("int32")}), batch_size=None,
+                    load_from_cache_file=False,
+                )
             else:
                 train_set = load_dataset(data, split=split)
+
         if label_num:
             try:
                 return train_set, len(set(train_set[self.label_name]))
@@ -137,7 +180,45 @@ class DataProcess(object):
                 return train_set, len(train_set[self.label_name][0])
         else:
             return train_set
-if __name__=="__main__":
-    data_processor=DATA_process()
-    valset=data_processor.validationset(data='ag_news')
-    print(valset)
+
+    def test_dataset(self, data, label_num):
+        if data == 'mrpc':
+            test_set = load_dataset('glue', data, split='test')
+            print('-' * 20, 'Test on glue@{}'.format(data), '-' * 20)
+        elif data in ['imdb', 'ag_news', 'trec']:
+            test_set = load_dataset(data, split='test')
+            print('-' * 20, 'Test on {}'.format(data), '-' * 20)
+        elif data == 'sst':
+            test_set = load_dataset(data, 'default', split='test')
+            test_set = test_set.map(
+                lambda example: {
+                    'label': int(example['label'] * 10 // 2) if example['label'] != 1 else int(example['label'])
+                }, remove_columns=['tokens', 'tree'], num_proc=4
+            )
+            test_set = test_set.cast(
+                Features({'sentence': Value(dtype='string', id=None), "label": Value("int32")}), batch_size=None,
+                load_from_cache_file=False,
+            )
+            print('-' * 20, 'Test on {}'.format(data), '-' * 20)
+        else:
+            test_set = load_dataset(data, split='test')
+            print('-' * 20, 'Test on {}'.format(data), '-' * 20)
+
+        if label_num:
+            try:
+                return test_set, len(set(test_set[self.label_name]))
+            except:
+                return test_set, len(test_set[self.label_name][0])
+        else:
+            return test_set
+
+
+if __name__ == "__main__":
+    data_processor = DataProcess()
+    data_processor.label_name = 'label'
+    train_set, _ = data_processor.train_dataset(data='sst', label_num=True)
+    print("Train dataloader:\n", train_set)
+    valset = data_processor.validation_dataset(data='sst')
+    print("Validation dataloader:\n", valset)
+    test_set, _ = data_processor.test_dataset(data='sst', label_num=True)
+    print("Test dataloader:\n", test_set)
