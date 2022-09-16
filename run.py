@@ -227,10 +227,6 @@ def train(args):
     if args.data_path:
         print('=' * 20, 'Train Augmentation dataset path: {}'.format(args.data_path), '=' * 20)
         aug_dataloader, label_num = data_process.augmentation_data(count_label=True)
-        if args.mode == 'aug':
-            train_dataloader = aug_dataloader
-        else:
-            aug_dataloader = cycle(aug_dataloader)
 
     t2 = time.time()
     print('=' * 20, 'Dataset process done! cost {:.2f}s'.format(t2 - t1), '=' * 20)
@@ -246,11 +242,20 @@ def train(args):
     all_steps = args.epoch * len(train_dataloader)
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=20, num_training_steps=all_steps)
     criterion = nn.CrossEntropyLoss()
-    model.train()
+
+    # ========================================
+    #     Assess Confidence of Augmentation
+    # ========================================
+    if args.data_path:
+        if args.mode == 'aug':
+            train_dataloader = aug_dataloader
+        else:
+            aug_dataloader = cycle(aug_dataloader)
 
     # ========================================
     #               Train
     # ========================================
+    model.train()
     print('=' * 20, 'Start training', '=' * 20)
     _, best_acc = validate(model, val_dataloader)
     best_steps = 0
@@ -404,12 +409,12 @@ def train(args):
             )
 
 
-def validate(model, val_dataloader):
+def eval_logits(model, dataloader):
     total_val_loss = 0
-    model.eval()  # evaluation after each epoch
+    model.eval()
     logits = []
     label_ids = []
-    for i, batch in enumerate(val_dataloader):
+    for i, batch in enumerate(dataloader):
         with torch.no_grad():
             batch = {k: v.to(args.device) for k, v in batch.items()}
             outputs = model(**batch)
@@ -428,10 +433,19 @@ def validate(model, val_dataloader):
             else:
                 total_val_loss += loss.item()
 
-    label_ids = np.hstack(label_ids)
+    if label_ids[0].ndim > 1:
+        label_ids = np.vstack(label_ids)
+    else:
+        label_ids = np.hstack(label_ids)
     logits = torch.cat(logits, dim=0)
     logits = logits.detach().cpu().numpy()
-    avg_val_accuracy = flat_accuracy(logits, label_ids)
+
+    return label_ids, logits, total_val_loss
+
+
+def validate(model, val_dataloader):
+    y_true, logits, total_val_loss = eval_logits(model, val_dataloader)
+    avg_val_accuracy = flat_accuracy(logits, y_true)
     if args.local_rank != -1:
         avg_val_accuracy = torch.tensor(avg_val_accuracy).to(args.device)
         avg_val_accuracy = reduce_tensor(avg_val_accuracy, args)
@@ -448,19 +462,18 @@ def test(args):
     t2 = time.time()
     print('=' * 20, 'Dataset process done! cost {:.2f}s'.format(t2 - t1), '=' * 20)
     print(' - ' * 160)
-    if args.load_model_path:
-        model = load_model(args, label_num)
-        avg_test_loss, avg_test_accuracy = validate(model, test_dataloader)
-        print(
-            '| Data : {} | Mode: {:.8} | Seed: {} | Best acc:{} | Random mix: {}'.format(
-                args.data, args.mode, args.seed, round(avg_test_accuracy * 100, 3), bool(args.random_mix),
-                args.data_path
-            )
-        )
-    elif args.load_model_path is None and args.save_model:
+    if args.load_model_path is None and args.save_model:
         args.load_model_path = 'best_model.pt'
-    else:
+    elif args.load_model_path is None and not args.save_model:
         print("Test cannot be done!")
+    model = load_model(args, label_num)
+    avg_test_loss, avg_test_accuracy = validate(model, test_dataloader)
+    print(
+        '| Data : {} | Mode: {:.8} | Seed: {} | Best acc:{} | Random mix: {}'.format(
+            args.data, args.mode, args.seed, round(avg_test_accuracy * 100, 3), bool(args.random_mix),
+            args.data_path
+        )
+    )
 
 
 def run(args):
