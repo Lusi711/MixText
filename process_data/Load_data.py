@@ -2,7 +2,7 @@ import os
 import torch
 import numpy as np
 from datasets import load_dataset, load_from_disk, Features, Value
-from transformers import BertTokenizer
+from transformers import RobertaTokenizer
 from process_data import settings
 
 
@@ -12,7 +12,7 @@ class DataProcess(object):
             print('Initializing with args')
             self.data = args.data if args.data else None
             self.task = args.task if args.task else None
-            self.tokenizer = BertTokenizer.from_pretrained(args.model, do_lower_case=True) if args.model else None
+            self.tokenizer = RobertaTokenizer.from_pretrained(args.model, do_lower_case=True) if args.model else None
             self.task_settings = settings.TaskSettings()
             self.max_length = args.max_length if args.max_length else None
             self.label_name = args.label_name if args.label_name else None
@@ -43,7 +43,7 @@ class DataProcess(object):
         else:
             validation_set = validation_set.map(self.encode_pair, batched=True, num_proc=self.num_proc)
         validation_set = validation_set.rename_column(self.label_name, "labels")
-        validation_set.set_format(type='torch', columns=['input_ids', 'token_type_ids', 'attention_mask', 'labels'])
+        validation_set.set_format(type='torch', columns=['input_ids', 'attention_mask', 'labels'])
 
         val_dataloader = torch.utils.data.DataLoader(validation_set, batch_size=self.batch_size, shuffle=True)
 
@@ -70,7 +70,7 @@ class DataProcess(object):
         if self.max_train_token:
             print('-' * 20, 'filter sample whose sentence longer than {}'.format(self.max_train_token), '-' * 20)
             train_set = train_set.filter(lambda example: sum(example['attention_mask']) < self.max_train_token + 2)
-        train_set.set_format(type='torch', columns=['input_ids', 'token_type_ids', 'attention_mask', 'labels'])
+        train_set.set_format(type='torch', columns=['input_ids', 'attention_mask', 'labels'])
 
         train_dataloader = torch.utils.data.DataLoader(train_set, batch_size=self.batch_size, shuffle=True)
 
@@ -93,7 +93,7 @@ class DataProcess(object):
 
         aug_dataset = aug_dataset.rename_column(self.label_name, 'labels')
 
-        aug_dataset.set_format(type='torch', columns=['input_ids', 'token_type_ids', 'attention_mask', 'labels'])
+        aug_dataset.set_format(type='torch', columns=['input_ids', 'attention_mask', 'labels'])
         aug_dataloader = torch.utils.data.DataLoader(aug_dataset, batch_size=self.aug_batch_size, shuffle=True)
 
         if count_label:
@@ -115,7 +115,7 @@ class DataProcess(object):
         else:
             test_set = test_set.map(self.encode_pair, batched=True, num_proc=self.num_proc)
         test_set = test_set.rename_column(self.label_name, "labels")
-        test_set.set_format(type='torch', columns=['input_ids', 'token_type_ids', 'attention_mask', 'labels'])
+        test_set.set_format(type='torch', columns=['input_ids', 'attention_mask', 'labels'])
 
         test_dataloader = torch.utils.data.DataLoader(test_set, batch_size=self.batch_size, shuffle=True)
 

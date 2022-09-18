@@ -16,7 +16,7 @@ from itertools import cycle
 from sklearn.metrics import accuracy_score
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
-from transformers import AdamW, BertForSequenceClassification
+from transformers import AdamW, RobertaForSequenceClassification
 from transformers import get_linear_schedule_with_warmup
 from process_data.Load_data import DataProcess
 
@@ -125,7 +125,7 @@ def load_model(args, label_num):
     print('*' * 40, '\nSettings:{}'.format(args))
     print('*' * 40)
     print('=' * 20, 'Loading models', '=' * 20)
-    model = BertForSequenceClassification.from_pretrained(args.model, num_labels=label_num)
+    model = RobertaForSequenceClassification.from_pretrained(args.model, num_labels=label_num)
     model.to(device)
     t2 = time.time()
     print('=' * 20, 'Loading models complete!, cost {:.2f}s'.format(t2 - t1), '=' * 20)
@@ -160,7 +160,7 @@ def parse_argument():
     parser.add_argument('--val_steps', default=100, type=int, help='evaluate on dev datasets every steps')
     parser.add_argument('--max_length', default=128, type=int, help='encode max length')
     parser.add_argument('--label_name', type=str, default='label')
-    parser.add_argument('--model', type=str, default='bert-base-uncased')
+    parser.add_argument('--model', type=str, default='roberta-base')
     parser.add_argument('--low_resource_dir', type=str, help='Low resource data dir')
 
     # train on augmentation dataset parameters
