@@ -38,7 +38,6 @@ def constituency_parsing(args):
         output_path = os.path.join(path_dir, 'data', 'train_parsing.csv')
         if os.path.exists(output_path):
             print('The data {} has already parsed!'.format(dataset.upper()))
-            continue
         train = pd.read_csv(os.path.join(path_dir, 'data', 'train.csv'), encoding="utf-8")
         for i, text_name in enumerate(task_to_keys[dataset]):
             parsing_name = 'parsing{}'.format(i + 1)
@@ -57,7 +56,6 @@ def download_data(args):
         path_dir = os.path.join(DATA_dir, dataset.upper())
         if dataset.upper() in os.listdir(DATA_dir):
             print('{} directory already exists !'.format(dataset.upper()))
-            continue
         try:
             if dataset == ['addprim_jump', 'addprim_turn_left', 'simple']:
                 downloaded_data_list = [load_dataset('scan', dataset)]
@@ -67,7 +65,6 @@ def download_data(args):
                 downloaded_data_list = [load_dataset("sst", "default")]
             else:
                 downloaded_data_list = [load_dataset(dataset)]
-
             if not os.path.exists(path_dir):
                 if dataset == 'trec':
                     os.makedirs(os.path.join(path_dir, 'generated/fine'))
@@ -85,17 +82,10 @@ def download_data(args):
                     os.makedirs(os.path.join(path_dir, 'runs/raw_aug'))
                 os.makedirs(os.path.join(path_dir, 'logs'))
                 os.makedirs(os.path.join(path_dir, 'data'))
-                for downloaded_data in downloaded_data_list:
-                    for data_split in downloaded_data:
-                        dataset_split = downloaded_data[data_split]
-                        if dataset == 'sst':
-                            dataset_split = dataset_split.map(
-                                lambda example: {
-                                    'label': int(example['label'] * 10 // 2) if example['label'] != 1 else int(
-                                        example['label'])
-                                }, num_proc=args.proc,
-                            )
-                        dataset_split.to_csv(os.path.join(path_dir, 'data', data_split + '.csv'), index=0)
+            for downloaded_data in downloaded_data_list:
+                for data_split in downloaded_data:
+                    dataset_split = downloaded_data[data_split]
+                    dataset_split.to_csv(os.path.join(path_dir, 'data', data_split + '.csv'), index=0)
         except Exception as e:
             print('Downloading failed on {}, due to error {}'.format(dataset, e))
 
