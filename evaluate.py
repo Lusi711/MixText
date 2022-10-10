@@ -5,6 +5,8 @@ import torch
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+from tqdm import tqdm
+
 from process_data.Load_data import DataProcess
 from run import load_model
 
@@ -22,7 +24,7 @@ def parse_argument():
     parser.add_argument('--batch_size', default=128, type=int, help='train examples in each batch')
     parser.add_argument('--max_length', default=128, type=int, help='encode max length')
     parser.add_argument('--label_name', type=str, default='label')
-    parser.add_argument('--model', type=str, default='bert-base-uncased')
+    parser.add_argument('--model', type=str, default='roberta-base')
     parser.add_argument('--low_resource_dir', type=str, help='Low resource data dir')
 
     # train on augmentation dataset parameters
@@ -81,7 +83,8 @@ def eval_logits(model, dataloader):
     model.eval()  # evaluation after each epoch
     logits = []
     label_ids = []
-    for i, batch in enumerate(dataloader):
+    bar = tqdm(enumerate(dataloader), total=len(dataloader))
+    for step, batch in bar:
         with torch.no_grad():
             batch = {k: v.to(args.device) for k, v in batch.items()}
             outputs = model(**batch)

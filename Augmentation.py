@@ -184,8 +184,8 @@ def subtree_exchange_single(args, parsing1, label1, parsing2, label2, lam1, lam2
     exchanging_len = len(candidate2.leaves())
     new_len = t1_len - exchanged_len + exchanging_len
 
-    new_label[int(label2)] = exchanging_len / new_len
-    new_label[int(label1)] = (new_len - exchanging_len) / new_len
+    new_label[int(label2)] += exchanging_len / new_len
+    new_label[int(label1)] += (new_len - exchanging_len) / new_len
 
     if args.showinfo:
         print('-' * 50)
