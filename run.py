@@ -217,23 +217,18 @@ def filter_aug_dataset(args, model, aug_dataset):
                 del batch['labels']
                 outputs = model(**batch)
                 logits = outputs.logits
-            logits = logits.detach().cpu().numpy()
-            logits = F.softmax(logits, dim=1)
-            for i in range(len(mix_label)):
-                if np.argmax(mix_label[i]) == np.argmax(logits[i]):
-                    for label in np.where(mix_label[i] > 0)[0]:
-                        mix_label[i][label] += logits[i][label]
-                    examples['labels'][i] = torch.Tensor(np.divide(mix_label[i], np.sum(mix_label[i])))
-                else:
-                    examples['labels'][i] = float('nan')
         else:
             with torch.no_grad():
                 outputs = model(**batch)
                 logits = outputs.logits
-            logits = logits.detach().cpu().numpy()
-            for i in range(len(mix_label)):
-                if mix_label[i] != logits[i]:
-                    examples['labels'][i] = float('nan')
+        logits = logits.detach().cpu().numpy()
+        if args.class_type == 'multiclass':
+            y_pred = np.argmax(logits, axis=0)
+        elif args.class_type == 'ordinal':
+            mix_label = np.array([int(label * 10 // 2) if label < 1.0 else 1 for label in mix_label])
+            y_pred = np.array([int(label * 10 // 2) if label < 1.0 else 1 for label in logits])
+        selected_indices = np.where(y_pred.flatten() != mix_label)[0]
+        examples['labels'][selected_indices] = float('nan')
         for key in examples:
             examples[key] = examples[key].numpy()
         return examples
@@ -294,8 +289,8 @@ def train(args):
     #     Assess Confidence of Augmentation
     # ========================================
     if args.data_path:
-        # aug_dataset = filter_aug_dataset(args, model, aug_dataset)
-        # aug_dataloader = torch.utils.data.DataLoader(aug_dataset, batch_size=args.aug_batch_size, shuffle=True)
+        aug_dataset = filter_aug_dataset(args, model, aug_dataset)
+        aug_dataloader = torch.utils.data.DataLoader(aug_dataset, batch_size=args.aug_batch_size, shuffle=True)
         if args.mode == 'aug':
             train_dataloader = aug_dataloader
         else:
@@ -514,8 +509,8 @@ def validate(args, model, val_dataloader):
         avg_val_accuracy = flat_accuracy(logits, y_true)
     elif args.class_type == 'ordinal':
         y_true = np.array([int(label * 10 // 2) if label < 1.0 else 1 for label in y_true])
-        logits = np.array([int(label * 10 // 2) if label < 1.0 else 1 for label in logits])
-        avg_val_accuracy = sum(logits.flatten() == y_true) / len(logits)
+        y_pred = np.array([int(label * 10 // 2) if label < 1.0 else 1 for label in logits])
+        avg_val_accuracy = sum(y_pred.flatten() == y_true) / len(y_pred)
     if args.local_rank != -1:
         avg_val_accuracy = torch.tensor(avg_val_accuracy).to(args.device)
         avg_val_accuracy = reduce_tensor(avg_val_accuracy, args)
