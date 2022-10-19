@@ -149,6 +149,7 @@ def parse_argument():
     parser.add_argument('--save_model', action='store_true')
     parser.add_argument('--load_model_path', type=str)
     parser.add_argument('--data', type=str, required=True)
+    parser.add_argument('--class_type', type=str, choices=['ordinal', 'multiclass'], help='classification problem')
     parser.add_argument('--num_proc', type=int, default=8, help='multi process number used in dataloader process')
 
     # training settings
@@ -241,7 +242,10 @@ def train(args):
     optimizer = AdamW(model.parameters(), lr=args.lr)
     all_steps = args.epoch * len(train_dataloader)
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=20, num_training_steps=all_steps)
-    criterion = nn.CrossEntropyLoss()
+    if args.class_type == 'multiclass':
+        criterion = nn.CrossEntropyLoss()
+    elif args.class_type == 'ordinal':
+        criterion = nn.MSELoss()
 
     # ========================================
     #     Assess Confidence of Augmentation
@@ -257,7 +261,7 @@ def train(args):
     # ========================================
     model.train()
     print('=' * 20, 'Start training', '=' * 20)
-    _, best_acc = validate(model, val_dataloader)
+    best_loss, best_acc = validate(args, model, val_dataloader)
     best_steps = 0
     args.val_steps = min(len(train_dataloader), args.val_steps)
 
@@ -292,10 +296,8 @@ def train(args):
                     # train on 01 tree mixup augmentation dataset
                     mix_label = batch['labels']
                     del batch['labels']
-
                     outputs = model(**batch)
                     logits = outputs.logits
-
                     loss = cross_entropy(logits, mix_label)
                 else:
                     # train on 00&11 tree mixup augmentation dataset
@@ -303,9 +305,7 @@ def train(args):
                     loss = outputs.loss
             else:
                 # normal train
-
                 batch = {k: v.to(args.device) for k, v in batch.items()}
-
                 outputs = model(**batch)
                 loss = outputs.loss
             # ----------------------------------------------
@@ -314,13 +314,11 @@ def train(args):
             if args.mode == 'raw_aug':
                 aug_batch = next(aug_dataloader)
                 aug_batch = {k: v.to(args.device) for k, v in aug_batch.items()}
-
                 if args.mix:
                     mix_label = aug_batch['labels']
                     del aug_batch['labels']
                     aug_outputs = model(**aug_batch)
                     aug_logits = aug_outputs.logits
-
                     aug_loss = cross_entropy(aug_logits, mix_label)
                 else:
                     aug_outputs = model(**aug_batch)
@@ -345,19 +343,28 @@ def train(args):
                     )
                 else:
                     bar.set_description(
-                        '| Epoch: {:<2}/{:<2}| Best acc:{:.2f}|'.format(epoch, args.epoch, best_acc * 100)
+                        '| Epoch: {:<2}/{:<2}| Best acc:{:.2f}| Best loss: {:.2f}'.format(
+                            epoch, args.epoch, best_acc * 100, best_loss
+                        )
                     )
 
             # =================================================
             #                     Validation
             # =================================================
             if (epoch * len(train_dataloader) + step + 1) % args.val_steps == 0:
-                avg_val_loss, avg_val_accuracy = validate(model, val_dataloader)
-                if avg_val_accuracy > best_acc:
-                    best_acc = avg_val_accuracy
-                    best_steps = (epoch * len(train_dataloader) + step) * args.batch_size
-                    if args.save_model:
-                        torch.save(model.state_dict(), 'best_model.pt')
+                avg_val_loss, avg_val_accuracy = validate(args, model, val_dataloader)
+                if args.class_type == 'multiclass':
+                    if avg_val_accuracy > best_acc:
+                        best_acc = avg_val_accuracy
+                        best_steps = (epoch * len(train_dataloader) + step) * args.batch_size
+                        if args.save_model:
+                            torch.save(model.state_dict(), 'best_model.pt')
+                elif args.class_type == 'ordinal':
+                    if avg_val_loss < best_loss:
+                        best_loss = avg_val_loss
+                        best_steps = (epoch * len(train_dataloader) + step) * args.batch_size
+                        if args.save_model:
+                            torch.save(model.state_dict(), 'best_model.pt')
                 if args.local_rank == 0 or args.local_rank == -1:
                     writer.add_scalar("Test/Loss", avg_val_loss, epoch * len(train_dataloader) + step)
                     writer.add_scalar("Test/Accuracy", avg_val_accuracy, epoch * len(train_dataloader) + step)
@@ -382,8 +389,9 @@ def train(args):
             aug_num_seed = aug_num + '_' + aug_data_seed
             result_logger.info('-' * 160)
             result_logger.info(
-                '| Data : {} | Mode: {:<8} | #Aug {:<6} | Best acc:{} | Steps:{} | Weight {} |Aug data: {}'.format(
-                    args.data, args.mode, aug_num_seed, round(best_acc * 100, 3), best_steps, args.augweight,
+                '| Data : {} | Mode: {:<8} | #Aug {:<6} | Best acc:{} | Best loss: {} | Steps:{} | Weight {} | '
+                'Aug data: {}'.format(
+                    args.data, args.mode, aug_num_seed, round(best_acc * 100, 3), best_loss, best_steps, args.augweight,
                     args.data_path
                 )
             )
@@ -443,13 +451,16 @@ def eval_logits(model, dataloader):
     return label_ids, logits, total_val_loss
 
 
-def validate(model, val_dataloader):
+def validate(args, model, val_dataloader):
     y_true, logits, total_val_loss = eval_logits(model, val_dataloader)
-    avg_val_accuracy = flat_accuracy(logits, y_true)
+    if args.class_type == 'multiclass':
+        avg_val_accuracy = flat_accuracy(logits, y_true)
+    elif args.class_type == 'ordinal':
+        avg_val_accuracy = sum(np.abs(logits.flatten() - y_true) <= (1.0 / 5) / 2) / len(logits)
     if args.local_rank != -1:
         avg_val_accuracy = torch.tensor(avg_val_accuracy).to(args.device)
         avg_val_accuracy = reduce_tensor(avg_val_accuracy, args)
-    avg_val_loss = total_val_loss / len(val_dataloader)
+    avg_val_loss = total_val_loss * args.batch_size / len(logits)
 
     return avg_val_loss, avg_val_accuracy
 
@@ -467,10 +478,10 @@ def test(args):
     elif args.load_model_path is None and not args.save_model:
         print("Test cannot be done!")
     model = load_model(args, label_num)
-    avg_test_loss, avg_test_accuracy = validate(model, test_dataloader)
+    avg_test_loss, avg_test_accuracy = validate(args, model, test_dataloader)
     print(
-        '| Data : {} | Mode: {:.8} | Seed: {} | Best acc:{} | Random mix: {}'.format(
-            args.data, args.mode, args.seed, round(avg_test_accuracy * 100, 3), bool(args.random_mix),
+        '| Data : {} | Mode: {:.8} | Seed: {} | Best acc:{} | Best loss: {}'.format(
+            args.data, args.mode, args.seed, round(avg_test_accuracy * 100, 3), avg_test_loss,
             args.data_path
         )
     )

@@ -27,7 +27,7 @@ def modify(commands):
     return ' '.join(commands)
 
 
-def c2a(commands, debug=0):
+def c2a(commands):
     verb = {'look': 'I_LOOK', 'walk': 'I_WALK', 'run': 'I_RUN', 'jump': 'I_JUMP'}
     conjunction = ['and', 'after']
 
@@ -35,7 +35,6 @@ def c2a(commands, debug=0):
     actions = []
     previous_command = []
     pre_actions = []
-    i = 0
 
     while len(commands) > 0:
         current = commands.pop(0)
@@ -107,8 +106,6 @@ def subtree_exchange_scan(args, parsing1, parsing2):
     try:
         t1 = Tree.fromstring(parsing1)
         t2 = Tree.fromstring(parsing2)
-        t1_len = len(t1.leaves())
-        t2_len = len(t2.leaves())
         # ----- restrict label--------------
         candidate_subtree1 = list(t1.subtrees())
         candidate_subtree2 = list(t2.subtrees())
@@ -126,7 +123,7 @@ def subtree_exchange_scan(args, parsing1, parsing2):
             print('src2:', parsing2)
             print('new:', new_sentence)
         return modified_sentence, new_label
-    except Exception as e:
+    except:
         return None
 
 
@@ -179,13 +176,15 @@ def subtree_exchange_single(args, parsing1, label1, parsing2, label2, lam1, lam2
     exchanging_span = ' '.join(candidate2.leaves())
     new_sentence = original_sentence.replace(exchanged_span, exchanging_span)
 
-    new_label = np.zeros(len(args.label_list))
-
     exchanging_len = len(candidate2.leaves())
     new_len = t1_len - exchanged_len + exchanging_len
 
-    new_label[int(label2)] = exchanging_len / new_len
-    new_label[int(label1)] = (new_len - exchanging_len) / new_len
+    if args.class_type == 'ordinal':
+        new_label = (exchanging_len / new_len) * int(label2) + ((new_len - exchanging_len) / new_len) * label1
+    else:
+        new_label = np.zeros(len(args.label_list))
+        new_label[int(label2)] = exchanging_len / new_len
+        new_label[int(label1)] = (new_len - exchanging_len) / new_len
 
     if args.showinfo:
         print('-' * 50)
@@ -368,6 +367,7 @@ def parse_argument():
     parser.add_argument('--low_resource', action='store_true', help="create low source raw and aug datasets if set")
     parser.add_argument('--debug', action='store_true', help="display debug information")
     parser.add_argument('--data', nargs='+', required=True, help='data list')
+    parser.add_argument('--class_type', type=str, choices=['multiclass', 'ordinal'], help='classification problem')
     parser.add_argument('--proc', type=int, help='processing number for multiprocessing')
     args = parser.parse_args()
     if not args.proc:
@@ -534,7 +534,20 @@ def main(args):
         dataset = load_dataset('csv', data_files=[args.data_path], split='train')
         if args.data_type in ['single_cls', 'pair_cls']:
             args.label_list = list(set(dataset[args.label_name]))
-        testset = load_dataset('csv', data_files=[test_path], split='train')
+        test_set = load_dataset('csv', data_files=[test_path], split='train')
+
+        if data == 'sst':
+            if args.class_type == 'multiclass':
+                dataset = dataset.map(
+                    lambda example: {
+                        'label': int(example['label'] * 10 // 2) if example['label'] != 1 else int(example['label'])
+                    }, num_proc=args.proc
+                )
+                test_set = test_set.map(
+                    lambda example: {
+                        'label': int(example['label'] * 10 // 2) if example['label'] != 1 else int(example['label'])
+                    }, num_proc=args.proc
+                )
 
         for seed in args.seeds:
             seed = int(seed)
@@ -560,7 +573,7 @@ def main(args):
                 args.fraction = None
                 for times in args.times:
                     times = int(times)
-                    p.apply_async(create_aug_data, args=(args, task_settings, dataset, data, seed, times, testset))
+                    p.apply_async(create_aug_data, args=(args, task_settings, dataset, data, seed, times, test_set))
         print('=' * 20, 'Start generating augmentation datsets !', "=" * 20)
 
     p.close()
