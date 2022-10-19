@@ -208,6 +208,46 @@ def parse_argument():
     return args
 
 
+def filter_aug_dataset(args, model, aug_dataset):
+    def sharpen_augment_labels(examples):
+        mix_label = examples['labels'].detach().cpu().numpy()
+        batch = examples.copy()
+        if args.mix:
+            with torch.no_grad():
+                del batch['labels']
+                outputs = model(**batch)
+                logits = outputs.logits
+            logits = logits.detach().cpu().numpy()
+            logits = F.softmax(logits, dim=1)
+            for i in range(len(mix_label)):
+                if np.argmax(mix_label[i]) == np.argmax(logits[i]):
+                    for label in np.where(mix_label[i] > 0)[0]:
+                        mix_label[i][label] += logits[i][label]
+                    examples['labels'][i] = torch.Tensor(np.divide(mix_label[i], np.sum(mix_label[i])))
+                else:
+                    examples['labels'][i] = float('nan')
+        else:
+            with torch.no_grad():
+                outputs = model(**batch)
+                logits = outputs.logits
+            logits = logits.detach().cpu().numpy()
+            for i in range(len(mix_label)):
+                if mix_label[i] != logits[i]:
+                    examples['labels'][i] = float('nan')
+        for key in examples:
+            examples[key] = examples[key].numpy()
+        return examples
+
+    if args.data_path:
+        aug_dataset = aug_dataset.map(sharpen_augment_labels, batched=True, batch_size=args.batch_size)
+        indices_to_keep = set(np.arange(len(aug_dataset['labels']))) - set(np.argwhere(np.isnan(aug_dataset['labels'].numpy()))[:, 0])
+        aug_dataset = aug_dataset.select(indices_to_keep)
+        aug_dataset = aug_dataset.rename_column('labels', args.label_name)
+        aug_dataset.save_to_disk('DATA/SST/generated/times5_min0_seed0_0.3_0.1_30k')
+
+    return aug_dataset
+
+
 def train(args):
     # ========================================
     #         Tensorboard &Logging
@@ -221,13 +261,16 @@ def train(args):
     print('=' * 20, 'Start processing dataset', '=' * 20)
     t1 = time.time()
 
-    val_dataloader = data_process.validation_data()
+    validation_set = data_process.validation_data()
+    val_dataloader = torch.utils.data.DataLoader(validation_set, batch_size=args.batch_size, shuffle=True)
 
     if args.mode != 'aug':
-        train_dataloader, label_num = data_process.train_data(count_label=True)
+        train_set, label_num = data_process.train_data(count_label=True)
+        train_dataloader = torch.utils.data.DataLoader(train_set, batch_size=args.batch_size, shuffle=True)
     if args.data_path:
         print('=' * 20, 'Train Augmentation dataset path: {}'.format(args.data_path), '=' * 20)
-        aug_dataloader, label_num = data_process.augmentation_data(count_label=True)
+        aug_dataset, label_num = data_process.augmentation_data(count_label=True)
+        aug_dataloader = torch.utils.data.DataLoader(aug_dataset, batch_size=args.aug_batch_size, shuffle=True)
 
     t2 = time.time()
     print('=' * 20, 'Dataset process done! cost {:.2f}s'.format(t2 - t1), '=' * 20)
@@ -251,6 +294,8 @@ def train(args):
     #     Assess Confidence of Augmentation
     # ========================================
     if args.data_path:
+        # aug_dataset = filter_aug_dataset(args, model, aug_dataset)
+        # aug_dataloader = torch.utils.data.DataLoader(aug_dataset, batch_size=args.aug_batch_size, shuffle=True)
         if args.mode == 'aug':
             train_dataloader = aug_dataloader
         else:
@@ -264,7 +309,6 @@ def train(args):
     best_loss, best_acc = validate(args, model, val_dataloader)
     best_steps = 0
     args.val_steps = min(len(train_dataloader), args.val_steps)
-
     for epoch in range(args.epoch):
         bar = tqdm(enumerate(train_dataloader), total=len(train_dataloader) // args.world_size)
         fail = 0
@@ -354,17 +398,16 @@ def train(args):
             if (epoch * len(train_dataloader) + step + 1) % args.val_steps == 0:
                 avg_val_loss, avg_val_accuracy = validate(args, model, val_dataloader)
                 if args.class_type == 'multiclass':
-                    if avg_val_accuracy > best_acc:
-                        best_acc = avg_val_accuracy
-                        best_steps = (epoch * len(train_dataloader) + step) * args.batch_size
-                        if args.save_model:
-                            torch.save(model.state_dict(), 'best_model.pt')
+                    validation_criterion, reference_score = avg_val_accuracy, best_acc
                 elif args.class_type == 'ordinal':
-                    if avg_val_loss < best_loss:
-                        best_loss = avg_val_loss
+                    validation_criterion, reference_score = -avg_val_loss, -best_loss
+
+                if validation_criterion > reference_score:
+                        best_loss, best_acc = avg_val_loss, avg_val_accuracy
                         best_steps = (epoch * len(train_dataloader) + step) * args.batch_size
                         if args.save_model:
                             torch.save(model.state_dict(), 'best_model.pt')
+
                 if args.local_rank == 0 or args.local_rank == -1:
                     writer.add_scalar("Test/Loss", avg_val_loss, epoch * len(train_dataloader) + step)
                     writer.add_scalar("Test/Accuracy", avg_val_accuracy, epoch * len(train_dataloader) + step)
@@ -417,7 +460,7 @@ def train(args):
             )
 
 
-def eval_logits(model, dataloader):
+def eval_logits(args, model, dataloader, mode='val'):
     total_val_loss = 0
     model.eval()
     logits = []
@@ -425,14 +468,28 @@ def eval_logits(model, dataloader):
     for i, batch in enumerate(dataloader):
         with torch.no_grad():
             batch = {k: v.to(args.device) for k, v in batch.items()}
-            outputs = model(**batch)
-            batch_logits = outputs.logits
-            loss = outputs.loss
+            if mode == 'aug':
+                if args.mix:
+                    mix_label = batch['labels']
+                    label_ids.append(mix_label)
+                    del batch['labels']
+                    outputs = model(**batch)
+                    batch_logits = outputs.logits
+                    loss = cross_entropy(batch_logits, mix_label)
+                else:
+                    # same label tree mixup augmentation dataset
+                    outputs = model(**batch)
+                    batch_logits = outputs.logits
+                    loss = outputs.loss
+            else:
+                label_ids.append(batch['labels'].detach().cpu().numpy())
+                outputs = model(**batch)
+                batch_logits = outputs.logits
+                loss = outputs.loss
 
             if args.n_gpu > 1:
                 loss = loss.mean()
             logits.append(batch_logits)
-            label_ids.append(batch['labels'].detach().cpu().numpy())
 
             if args.local_rank != -1:
                 torch.distributed.barrier()
@@ -456,7 +513,9 @@ def validate(args, model, val_dataloader):
     if args.class_type == 'multiclass':
         avg_val_accuracy = flat_accuracy(logits, y_true)
     elif args.class_type == 'ordinal':
-        avg_val_accuracy = sum(np.abs(logits.flatten() - y_true) <= (1.0 / 5) / 2) / len(logits)
+        y_true = np.array([int(label * 10 // 2) if label < 1.0 else 1 for label in y_true])
+        logits = np.array([int(label * 10 // 2) if label < 1.0 else 1 for label in logits])
+        avg_val_accuracy = sum(logits.flatten() == y_true) / len(logits)
     if args.local_rank != -1:
         avg_val_accuracy = torch.tensor(avg_val_accuracy).to(args.device)
         avg_val_accuracy = reduce_tensor(avg_val_accuracy, args)
@@ -473,10 +532,7 @@ def test(args):
     t2 = time.time()
     print('=' * 20, 'Dataset process done! cost {:.2f}s'.format(t2 - t1), '=' * 20)
     print(' - ' * 160)
-    if args.load_model_path is None and args.save_model:
-        args.load_model_path = 'best_model.pt'
-    elif args.load_model_path is None and not args.save_model:
-        print("Test cannot be done!")
+    args.load_model_path = 'best_model.pt'
     model = load_model(args, label_num)
     avg_test_loss, avg_test_accuracy = validate(args, model, test_dataloader)
     print(

@@ -46,9 +46,7 @@ class DataProcess(object):
         validation_set = validation_set.rename_column(self.label_name, "labels")
         validation_set.set_format(type='torch', columns=['input_ids', 'attention_mask', 'labels'])
 
-        val_dataloader = torch.utils.data.DataLoader(validation_set, batch_size=self.batch_size, shuffle=True)
-
-        return val_dataloader
+        return validation_set
 
     def train_data(self, count_label=False):
         train_set, label_num = self.train_dataset(
@@ -73,12 +71,10 @@ class DataProcess(object):
             train_set = train_set.filter(lambda example: sum(example['attention_mask']) < self.max_train_token + 2)
         train_set.set_format(type='torch', columns=['input_ids', 'attention_mask', 'labels'])
 
-        train_dataloader = torch.utils.data.DataLoader(train_set, batch_size=self.batch_size, shuffle=True)
-
         if count_label:
-            return train_dataloader, label_num
+            return train_set, label_num
         else:
-            return train_dataloader
+            return train_set
 
     def augmentation_data(self, count_label=False):
         try:
@@ -98,12 +94,11 @@ class DataProcess(object):
         aug_dataset = aug_dataset.rename_column(self.label_name, 'labels')
 
         aug_dataset.set_format(type='torch', columns=['input_ids', 'attention_mask', 'labels'])
-        aug_dataloader = torch.utils.data.DataLoader(aug_dataset, batch_size=self.aug_batch_size, shuffle=True)
 
         if count_label:
-            return aug_dataloader, label_num
+            return aug_dataset, label_num
         else:
-            return aug_dataloader
+            return aug_dataset
 
     def test_data(self, count_label=False):
         if self.data in ['sst2', 'rte', 'qqp', 'mnli', 'qnli']:
