@@ -224,21 +224,25 @@ def filter_aug_dataset(args, model, aug_dataset):
         logits = logits.detach().cpu().numpy()
         if args.class_type == 'multiclass':
             y_pred = np.argmax(logits, axis=0)
+            selected_indices = np.where(y_pred.flatten() != mix_label)[0]
         elif args.class_type == 'ordinal':
-            mix_label = np.array([int(label * 10 // 2) if label < 1.0 else 1 for label in mix_label])
-            y_pred = np.array([int(label * 10 // 2) if label < 1.0 else 1 for label in logits])
-        selected_indices = np.where(y_pred.flatten() != mix_label)[0]
+            selected_indices = np.where(np.abs(logits.flatten() - mix_label) > 0.40)
         examples['labels'][selected_indices] = float('nan')
         for key in examples:
             examples[key] = examples[key].numpy()
         return examples
 
     if args.data_path:
-        aug_dataset = aug_dataset.map(sharpen_augment_labels, batched=True, batch_size=args.batch_size)
+        aug_dataset = aug_dataset.map(
+            sharpen_augment_labels, batched=True, batch_size=args.batch_size, load_from_cache_file=False,
+        )
         indices_to_keep = set(np.arange(len(aug_dataset['labels']))) - set(np.argwhere(np.isnan(aug_dataset['labels'].numpy()))[:, 0])
         aug_dataset = aug_dataset.select(indices_to_keep)
         aug_dataset = aug_dataset.rename_column('labels', args.label_name)
-        aug_dataset.save_to_disk('DATA/SST/generated/times5_min0_seed0_0.3_0.1_30k')
+        save_path = os.path.join(
+            'DATA', 'SST', 'generated', 'times5_min0_seed0_0.3_0.1_{}k'.format(round(len(aug_dataset) // 1000, -1))
+        )
+        aug_dataset.save_to_disk(save_path)
 
     return aug_dataset
 
@@ -382,7 +386,7 @@ def train(args):
                     )
                 else:
                     bar.set_description(
-                        '| Epoch: {:<2}/{:<2}| Best acc:{:.2f}| Best loss: {:.2f}'.format(
+                        '| Epoch: {:<2}/{:<2}| Best acc:{:.2f}| Best loss: {:.4f}'.format(
                             epoch, args.epoch, best_acc * 100, best_loss
                         )
                     )
@@ -504,7 +508,7 @@ def eval_logits(args, model, dataloader, mode='val'):
 
 
 def validate(args, model, val_dataloader):
-    y_true, logits, total_val_loss = eval_logits(model, val_dataloader)
+    y_true, logits, total_val_loss = eval_logits(args, model, val_dataloader)
     if args.class_type == 'multiclass':
         avg_val_accuracy = flat_accuracy(logits, y_true)
     elif args.class_type == 'ordinal':

@@ -90,11 +90,8 @@ class DataProcess(object):
             aug_dataset = aug_dataset.map(self.encode, batched=True, num_proc=self.num_proc)
         else:
             aug_dataset = aug_dataset.map(self.encode_pair, batched=True, num_proc=self.num_proc)
-
         aug_dataset = aug_dataset.rename_column(self.label_name, 'labels')
-
         aug_dataset.set_format(type='torch', columns=['input_ids', 'attention_mask', 'labels'])
-
         if count_label:
             return aug_dataset, label_num
         else:
