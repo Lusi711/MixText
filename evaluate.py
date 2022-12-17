@@ -4,7 +4,7 @@ import time
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, mean_squared_error, mean_absolute_error
 from tqdm import tqdm
 
 from process_data.Load_data import DataProcess
@@ -17,6 +17,7 @@ def parse_argument():
     parser.add_argument('--mode', type=str, choices=['raw', 'aug', 'raw_aug', 'visualize'], required=True)
     parser.add_argument('--load_model_path', type=str)
     parser.add_argument('--data', type=str, required=True)
+    parser.add_argument('--class_type', type=str, choices=['ordinal', 'multiclass'], help='classification problem')
     parser.add_argument('--num_proc', type=int, default=8, help='multi process number used in dataloader process')
 
     # training settings
@@ -29,7 +30,6 @@ def parse_argument():
 
     # train on augmentation dataset parameters
     parser.add_argument('--aug_batch_size', default=128, type=int, help='train examples in each batch')
-    parser.add_argument('--augweight', default=0.2, type=float)
     parser.add_argument('--data_path', type=str, help="augmentation file path")
     parser.add_argument(
         '--min_train_token', type=int, default=0, help="minimum token num restriction for train dataset"
@@ -37,12 +37,8 @@ def parse_argument():
     parser.add_argument(
         '--max_train_token', type=int, default=0, help="maximum token num restriction for train dataset"
     )
-    parser.add_argument('--mix', action='store_false', help='train on 01mixup')
 
     # random mixup
-    parser.add_argument('--alpha', type=float, default=0.1, help="online augmentation alpha")
-    parser.add_argument('--onlyaug', action='store_true', help="train only on online aug batch")
-    parser.add_argument('--difflen', action='store_true', help="train only on online aug batch")
     parser.add_argument('--random_mix', type=str, help="random mixup ")
 
     # visualize dataset
@@ -101,7 +97,13 @@ def eval_logits(model, dataloader):
 
 def test(model, dataloader):
     y_true, logits = eval_logits(model, dataloader)
-    y_pred = np.argmax(logits, axis=1).flatten()
+    if args.class_type == 'multiclass':
+        y_pred = np.argmax(logits)
+    elif args.class_type == 'ordinal':
+        print("Mean Squared Error:", mean_squared_error(y_true, logits.flatten()))
+        print("Mean Absolute Error:", mean_absolute_error(y_true, logits.flatten()))
+        y_true = np.array([int(label * 10 // 2) if label < 1.0 else 1 for label in y_true])
+        y_pred = np.array([int(label * 10 // 2) if label < 1.0 else 1 for label in logits])
     cm = confusion_matrix(y_true, y_pred)
     disp = ConfusionMatrixDisplay(confusion_matrix=cm)
     disp.plot()

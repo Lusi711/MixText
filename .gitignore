@@ -2,3 +2,4 @@ checkpoints/
 DATA/
 stanford-corenlp-4.5.1/
 .idea/
+best_model.pt

@@ -8,12 +8,15 @@ import torch
 import torch.nn.parallel
 import torch.utils.data.distributed
 import online_augmentation
+
 import numpy as np
 import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
+
 from itertools import cycle
-from sklearn.metrics import accuracy_score
+from multiprocessing import cpu_count
+from sklearn.metrics import accuracy_score, mean_squared_error
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 from transformers import AdamW, RobertaForSequenceClassification
@@ -51,6 +54,75 @@ def reduce_tensor(tensor, args):
     rt /= args.world_size
 
     return rt
+
+
+def parse_argument():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--local_rank', default=-1, type=int, help='node rank for distributed training')
+    parser.add_argument("--no_cuda", action='store_true', help="Avoid using CUDA when available")
+    parser.add_argument('--mode', type=str, choices=['raw', 'aug', 'raw_aug', 'visualize'], required=True)
+    parser.add_argument('--save_model', action='store_true')
+    parser.add_argument('--load_model_path', type=str)
+    parser.add_argument('--data', type=str, required=True)
+    parser.add_argument('--class_type', type=str, choices=['ordinal', 'multiclass'], help='classification problem')
+    parser.add_argument('--num_proc', type=int, help='multi process number used in dataloader process')
+
+    # training settings
+    parser.add_argument('--output_dir', type=str, help="tensorboard file output directory")
+    parser.add_argument('--epoch', type=int, default=5, help='train epochs')
+    parser.add_argument('--lr', type=float, default=2e-5, help='learning rate')
+    parser.add_argument('--seed', default=42, type=int, help='seed ')
+    parser.add_argument('--batch_size', default=128, type=int, help='train examples in each batch')
+    parser.add_argument('--val_steps', default=100, type=int, help='evaluate on dev datasets every steps')
+    parser.add_argument('--max_length', default=128, type=int, help='encode max length')
+    parser.add_argument('--label_name', type=str, default='label')
+    parser.add_argument('--model', type=str, default='roberta-base')
+    parser.add_argument('--low_resource_dir', type=str, help='Low resource data dir')
+
+    # train on augmentation dataset parameters
+    parser.add_argument('--aug_batch_size', default=128, type=int, help='train examples in each batch')
+    parser.add_argument('--augweight', default=0.2, type=float)
+    parser.add_argument('--data_path', type=str, help="augmentation file path")
+    parser.add_argument(
+        '--min_train_token', type=int, default=0, help="minimum token num restriction for train dataset"
+    )
+    parser.add_argument(
+        '--max_train_token', type=int, default=0, help="maximum token num restriction for train dataset"
+    )
+    parser.add_argument('--mix', action='store_false', help='train on 01mixup')
+
+    # random mixup
+    parser.add_argument('--alpha', type=float, default=0.1, help="online augmentation alpha")
+    parser.add_argument('--onlyaug', action='store_true', help="train only on online aug batch")
+    parser.add_argument('--difflen', action='store_true', help="train only on online aug batch")
+    parser.add_argument('--random_mix', type=str, help="random mixup ")
+
+    # visualize dataset
+
+    args = parser.parse_args()
+    if not args.num_proc:
+        args.num_proc = cpu_count()
+    if args.data == 'trec':
+        assert args.label_name in ['label-fine', 'label-coarse'], \
+            "If you want to train on trec dataset with augmentation, you have to name the label of split"
+        if not args.output_dir:
+            args.output_dir = os.path.join('DATA', args.data.upper(), 'runs', args.label_name, args.mode)
+    if args.mode == 'raw':
+        args.batch_size = 64
+    if 'aug' in args.mode:
+        assert args.data_path
+        if args.mode == 'aug':
+            args.seed = 42
+    if not args.output_dir:
+        args.output_dir = os.path.join('DATA', args.data.upper(), 'runs', args.mode)
+    if not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir)
+    if args.data in ['rte', 'mrpc', 'qqp', 'mnli', 'qnli']:
+        args.task = 'pair'
+    else:
+        args.task = 'single'
+
+    return args
 
 
 def tensorboard_settings(args):
@@ -141,73 +213,6 @@ def load_model(args, label_num):
     return model
 
 
-def parse_argument():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--local_rank', default=-1, type=int, help='node rank for distributed training')
-    parser.add_argument("--no_cuda", action='store_true', help="Avoid using CUDA when available")
-    parser.add_argument('--mode', type=str, choices=['raw', 'aug', 'raw_aug', 'visualize'], required=True)
-    parser.add_argument('--save_model', action='store_true')
-    parser.add_argument('--load_model_path', type=str)
-    parser.add_argument('--data', type=str, required=True)
-    parser.add_argument('--class_type', type=str, choices=['ordinal', 'multiclass'], help='classification problem')
-    parser.add_argument('--num_proc', type=int, default=8, help='multi process number used in dataloader process')
-
-    # training settings
-    parser.add_argument('--output_dir', type=str, help="tensorboard file output directory")
-    parser.add_argument('--epoch', type=int, default=5, help='train epochs')
-    parser.add_argument('--lr', type=float, default=2e-5, help='learning rate')
-    parser.add_argument('--seed', default=42, type=int, help='seed ')
-    parser.add_argument('--batch_size', default=128, type=int, help='train examples in each batch')
-    parser.add_argument('--val_steps', default=100, type=int, help='evaluate on dev datasets every steps')
-    parser.add_argument('--max_length', default=128, type=int, help='encode max length')
-    parser.add_argument('--label_name', type=str, default='label')
-    parser.add_argument('--model', type=str, default='roberta-base')
-    parser.add_argument('--low_resource_dir', type=str, help='Low resource data dir')
-
-    # train on augmentation dataset parameters
-    parser.add_argument('--aug_batch_size', default=128, type=int, help='train examples in each batch')
-    parser.add_argument('--augweight', default=0.2, type=float)
-    parser.add_argument('--data_path', type=str, help="augmentation file path")
-    parser.add_argument(
-        '--min_train_token', type=int, default=0, help="minimum token num restriction for train dataset"
-    )
-    parser.add_argument(
-        '--max_train_token', type=int, default=0, help="maximum token num restriction for train dataset"
-    )
-    parser.add_argument('--mix', action='store_false', help='train on 01mixup')
-
-    # random mixup
-    parser.add_argument('--alpha', type=float, default=0.1, help="online augmentation alpha")
-    parser.add_argument('--onlyaug', action='store_true', help="train only on online aug batch")
-    parser.add_argument('--difflen', action='store_true', help="train only on online aug batch")
-    parser.add_argument('--random_mix', type=str, help="random mixup ")
-
-    # visualize dataset
-
-    args = parser.parse_args()
-    if args.data == 'trec':
-        assert args.label_name in ['label-fine', 'label-coarse'], \
-            "If you want to train on trec dataset with augmentation, you have to name the label of split"
-        if not args.output_dir:
-            args.output_dir = os.path.join('DATA', args.data.upper(), 'runs', args.label_name, args.mode)
-    if args.mode == 'raw':
-        args.batch_size = 64
-    if 'aug' in args.mode:
-        assert args.data_path
-        if args.mode == 'aug':
-            args.seed = 42
-    if not args.output_dir:
-        args.output_dir = os.path.join('DATA', args.data.upper(), 'runs', args.mode)
-    if not os.path.exists(args.output_dir):
-        os.makedirs(args.output_dir)
-    if args.data in ['rte', 'mrpc', 'qqp', 'mnli', 'qnli']:
-        args.task = 'pair'
-    else:
-        args.task = 'single'
-
-    return args
-
-
 def filter_aug_dataset(args, model, aug_dataset):
     def sharpen_augment_labels(examples):
         mix_label = examples['labels'].detach().cpu().numpy()
@@ -226,7 +231,7 @@ def filter_aug_dataset(args, model, aug_dataset):
             y_pred = np.argmax(logits, axis=0)
             selected_indices = np.where(y_pred.flatten() != mix_label)[0]
         elif args.class_type == 'ordinal':
-            selected_indices = np.where(np.abs(logits.flatten() - mix_label) > 0.40)
+            selected_indices = np.where(np.abs(logits.flatten() - mix_label) > 0.10)
         examples['labels'][selected_indices] = float('nan')
         for key in examples:
             examples[key] = examples[key].numpy()
@@ -236,7 +241,8 @@ def filter_aug_dataset(args, model, aug_dataset):
         aug_dataset = aug_dataset.map(
             sharpen_augment_labels, batched=True, batch_size=args.batch_size, load_from_cache_file=False,
         )
-        indices_to_keep = set(np.arange(len(aug_dataset['labels']))) - set(np.argwhere(np.isnan(aug_dataset['labels'].numpy()))[:, 0])
+        indices_to_keep = set(np.arange(len(aug_dataset['labels']))) - set(np.argwhere(np.isnan(
+            aug_dataset['labels'].numpy()))[:, 0])
         aug_dataset = aug_dataset.select(indices_to_keep)
         aug_dataset = aug_dataset.rename_column('labels', args.label_name)
         save_path = os.path.join(
@@ -264,7 +270,7 @@ def train(args):
     val_dataloader = torch.utils.data.DataLoader(validation_set, batch_size=args.batch_size, shuffle=True)
 
     if args.mode != 'aug':
-        train_set, label_num = data_process.train_data(count_label=True)
+        train_set, label_num = data_process.train_data(count_label=False)
         train_dataloader = torch.utils.data.DataLoader(train_set, batch_size=args.batch_size, shuffle=True)
     if args.data_path:
         print('=' * 20, 'Train Augmentation dataset path: {}'.format(args.data_path), '=' * 20)
@@ -278,16 +284,6 @@ def train(args):
     #                   Model
     # ========================================
     model = load_model(args, label_num)
-    # ========================================
-    #           Optimizer Settings
-    # ========================================
-    optimizer = AdamW(model.parameters(), lr=args.lr)
-    all_steps = args.epoch * len(train_dataloader)
-    scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=20, num_training_steps=all_steps)
-    if args.class_type == 'multiclass':
-        criterion = nn.CrossEntropyLoss()
-    elif args.class_type == 'ordinal':
-        criterion = nn.MSELoss()
 
     # ========================================
     #     Assess Confidence of Augmentation
@@ -299,6 +295,16 @@ def train(args):
             train_dataloader = aug_dataloader
         else:
             aug_dataloader = cycle(aug_dataloader)
+    # ========================================
+    #           Optimizer Settings
+    # ========================================
+    optimizer = AdamW(model.parameters(), lr=args.lr)
+    all_steps = args.epoch * len(train_dataloader)
+    scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=20, num_training_steps=all_steps)
+    if args.class_type == 'multiclass':
+        criterion = nn.CrossEntropyLoss()
+    elif args.class_type == 'ordinal':
+        criterion = nn.MSELoss()
 
     # ========================================
     #               Train
@@ -327,7 +333,7 @@ def train(args):
                     logits = outputs.logits
                     loss = criterion(logits.to(args.device), target_a.to(args.device)) * (1 - lam) + criterion(
                         logits.to(args.device), target_b.to(args.device)) * lam
-                except Exception as e:
+                except:
                     fail += 1
                     batch = {k: v.to(args.device) for k, v in batch.items()}
                     outputs = model(**batch)
@@ -402,10 +408,10 @@ def train(args):
                     validation_criterion, reference_score = -avg_val_loss, -best_loss
 
                 if validation_criterion > reference_score:
-                        best_loss, best_acc = avg_val_loss, avg_val_accuracy
-                        best_steps = (epoch * len(train_dataloader) + step) * args.batch_size
-                        if args.save_model:
-                            torch.save(model.state_dict(), 'best_model.pt')
+                    best_loss, best_acc = avg_val_loss, avg_val_accuracy
+                    best_steps = (epoch * len(train_dataloader) + step) * args.batch_size
+                    if args.save_model:
+                        torch.save(model.state_dict(), 'best_model.pt')
 
                 if args.local_rank == 0 or args.local_rank == -1:
                     writer.add_scalar("Test/Loss", avg_val_loss, epoch * len(train_dataloader) + step)
@@ -511,14 +517,15 @@ def validate(args, model, val_dataloader):
     y_true, logits, total_val_loss = eval_logits(args, model, val_dataloader)
     if args.class_type == 'multiclass':
         avg_val_accuracy = flat_accuracy(logits, y_true)
+        avg_val_loss = total_val_loss * args.batch_size / len(logits)
     elif args.class_type == 'ordinal':
-        y_true = np.array([int(label * 10 // 2) if label < 1.0 else 1 for label in y_true])
-        y_pred = np.array([int(label * 10 // 2) if label < 1.0 else 1 for label in logits])
-        avg_val_accuracy = sum(y_pred.flatten() == y_true) / len(y_pred)
+        y_pred = [np.floor(score) if (score * 10) % 10 < 5 else np.ceil(score) for score in logits.flatten()]
+        avg_val_accuracy = sum(y_pred == y_true) / len(y_true)
+        avg_val_loss = mean_squared_error(y_true, logits.flatten())
+
     if args.local_rank != -1:
         avg_val_accuracy = torch.tensor(avg_val_accuracy).to(args.device)
         avg_val_accuracy = reduce_tensor(avg_val_accuracy, args)
-    avg_val_loss = total_val_loss * args.batch_size / len(logits)
 
     return avg_val_loss, avg_val_accuracy
 

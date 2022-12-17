@@ -24,7 +24,7 @@ def parsing_stanfordnlp(raw_text):
     try:
         parsing = snlp.parse(raw_text)
         return parsing
-    except Exception as e:
+    except IndexError:
         return 'None'
 
 

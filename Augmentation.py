@@ -10,6 +10,30 @@ from tqdm import tqdm
 from process_data import settings
 
 
+def parse_argument():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--lam1', type=float, default=0.3)
+    parser.add_argument('--lam2', type=float, default=0.1)
+    parser.add_argument('--times', default=[2, 5], nargs='+', help='augmentation times list')
+    parser.add_argument('--min_token', type=int, default=0, help='minimum token numbers of augmentation samples')
+    parser.add_argument('--label_name', type=str, default='label')
+    parser.add_argument('--phrase_label', action='store_true', help='subtree label must be same if set')
+    parser.add_argument('--phrase_length', action='store_true', help='subtree phrase must be same length if set')
+    parser.add_argument('--seeds', default=[0, 1, 2, 3, 4], nargs='+', help='seed list')
+    parser.add_argument('--showinfo', action='store_true')
+    parser.add_argument('--mixup_cross', action='store_false', help="NO mix across different classes if set")
+    parser.add_argument('--low_resource', action='store_true', help="create low source raw and aug datasets if set")
+    parser.add_argument('--debug', action='store_true', help="display debug information")
+    parser.add_argument('--data', nargs='+', required=True, help='data list')
+    parser.add_argument('--class_type', type=str, choices=['multiclass', 'ordinal'], help='classification problem')
+    parser.add_argument('--proc', type=int, help='processing number for multiprocessing')
+    args = parser.parse_args()
+    if not args.proc:
+        args.proc = cpu_count()
+
+    return args
+
+
 def modify(commands):
     commands = commands.split(' ')
     verb = ['look', 'jump', 'walk', 'turn', 'run']
@@ -352,30 +376,6 @@ def augmentation(args, data, seed, dataset, aug_times, lam1=0.1, lam2=0.3):
     return generated_list
 
 
-def parse_argument():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--lam1', type=float, default=0.3)
-    parser.add_argument('--lam2', type=float, default=0.1)
-    parser.add_argument('--times', default=[2, 5], nargs='+', help='augmentation times list')
-    parser.add_argument('--min_token', type=int, default=0, help='minimum token numbers of augmentation samples')
-    parser.add_argument('--label_name', type=str, default='label')
-    parser.add_argument('--phrase_label', action='store_true', help='subtree label must be same if set')
-    parser.add_argument('--phrase_length', action='store_true', help='subtree phrase must be same length if set')
-    parser.add_argument('--seeds', default=[0, 1, 2, 3, 4], nargs='+', help='seed list')
-    parser.add_argument('--showinfo', action='store_true')
-    parser.add_argument('--mixup_cross', action='store_false', help="NO mix across different classes if set")
-    parser.add_argument('--low_resource', action='store_true', help="create low source raw and aug datasets if set")
-    parser.add_argument('--debug', action='store_true', help="display debug information")
-    parser.add_argument('--data', nargs='+', required=True, help='data list')
-    parser.add_argument('--class_type', type=str, choices=['multiclass', 'ordinal'], help='classification problem')
-    parser.add_argument('--proc', type=int, help='processing number for multiprocessing')
-    args = parser.parse_args()
-    if not args.proc:
-        args.proc = cpu_count()
-
-    return args
-
-
 def create_aug_data(args, task_settings, dataset, data, seed, times, test_dataset=None):
     if args.phrase_label and not args.phrase_length:
         prefix_save_path = os.path.join(
@@ -537,17 +537,16 @@ def main(args):
         test_set = load_dataset('csv', data_files=[test_path], split='train')
 
         if data == 'sst':
-            if args.class_type == 'multiclass':
-                dataset = dataset.map(
-                    lambda example: {
-                        'label': int(example['label'] * 10 // 2) if example['label'] != 1 else int(example['label'])
-                    }, num_proc=args.proc
-                )
-                test_set = test_set.map(
-                    lambda example: {
-                        'label': int(example['label'] * 10 // 2) if example['label'] != 1 else int(example['label'])
-                    }, num_proc=args.proc
-                )
+            dataset = dataset.map(
+                lambda example: {
+                    'label': int(example['label'] * 10 // 2) if example['label'] != 1 else 4
+                }, num_proc=args.proc
+            )
+            test_set = test_set.map(
+                lambda example: {
+                    'label': int(example['label'] * 10 // 2) if example['label'] != 1 else 4
+                }, num_proc=args.proc
+            )
 
         for seed in args.seeds:
             seed = int(seed)
