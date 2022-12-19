@@ -191,7 +191,7 @@ class DataProcess(object):
             test_set = load_dataset(data, 'default', split='test')
             test_set = test_set.map(
                 lambda example: {
-                    'label': int(example['label'] * 10 // 2) if example['label'] != 1 else int(example['label'])
+                    'label': int(example['label'] * 10 // 2) if example['label'] != 1 else 4
                 }, remove_columns=['tokens', 'tree'], num_proc=self.num_proc
             )
             if class_type == 'multiclass':

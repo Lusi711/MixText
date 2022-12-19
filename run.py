@@ -231,7 +231,7 @@ def filter_aug_dataset(args, model, aug_dataset):
             y_pred = np.argmax(logits, axis=0)
             selected_indices = np.where(y_pred.flatten() != mix_label)[0]
         elif args.class_type == 'ordinal':
-            selected_indices = np.where(np.abs(logits.flatten() - mix_label) > 0.10)
+            selected_indices = np.where(np.abs(logits.flatten() - mix_label) > 0.5)
         examples['labels'][selected_indices] = float('nan')
         for key in examples:
             examples[key] = examples[key].numpy()
